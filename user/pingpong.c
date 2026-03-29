@@ -22,7 +22,7 @@ int main()
         exit(1);
     }
 
-    else if(pid == 0)
+    else if(pid == 0) // 子进程
     {
         close(p2c[1]);
         close(c2p[0]);
@@ -39,7 +39,7 @@ int main()
         exit(0);
     }
 
-    else
+    else // 父进程
     {
         close(p2c[0]);
         close(c2p[1]);

@@ -34,6 +34,7 @@ find(char *path, char *target)
     close(fd);
     return;
   }
+  // 无论文件还是目录，先比对名称
   if(strcmp(fmtname(path), target) == 0)
   {
     printf("%s\n", path);
