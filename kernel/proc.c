@@ -30,18 +30,19 @@ procinit(void)
   initlock(&pid_lock, "nextpid");
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
+      p->state = UNUSED;
 
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
-      uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
+      // char *pa = kalloc();
+      // if(pa == 0)
+      //   panic("kalloc");
+      // uint64 va = KSTACK((int) (p - proc));
+      // kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+      // p->kstack = va;
   }
-  kvminithart();
+  // kvminithart();
 }
 
 // Must be called with interrupts disabled,
@@ -107,19 +108,50 @@ allocproc(void)
 found:
   p->pid = allocpid();
 
-  // Allocate a trapframe page.
+  // Allocate a trapframe page.trapframe 陷阱帧 保存进程上下文
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     release(&p->lock);
     return 0;
   }
 
-  // An empty user page table.
-  p->pagetable = proc_pagetable(p);
-  if(p->pagetable == 0){
+  // 为每个进程分配内核页表的副本
+  p->kpagetable = proc_kpagetable();
+  if(p->kpagetable == 0)
+  {
     freeproc(p);
     release(&p->lock);
     return 0;
   }
+
+  // 照搬原来 procinit 里的分配栈逻辑，申请一页物理内存
+  char *pa = kalloc();
+  if(pa == 0) // 内存不够
+  {
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  // 计算这个栈应该放在哪个虚拟地址上
+  uint64 va = KSTACK((int) (p - proc));
+
+  if(mappages(p->kpagetable,va, PGSIZE, (uint64)pa,  PTE_R | PTE_W) < 0)
+  {
+    kfree((void*)pa);
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+  // 把虚拟地址记录在进程的 PCB 里
+  p->kstack = va;
+
+  // An empty user page table.
+  p->pagetable = proc_pagetable(p);
+  // if(p->pagetable == 0){
+  //   freeproc(p);
+  //   release(&p->lock);
+  //   return 0;
+  // }
 
   // Set up new context to start executing at forkret,
   // which returns to user space.
@@ -150,6 +182,13 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+
+  if(p->kpagetable)
+  {
+    proc_freekpagetable(p->kpagetable, p->kstack);
+    p->kpagetable = 0;
+  }
+  p->kstack = 0;
 }
 
 // Create a user page table for a given process,
@@ -221,6 +260,8 @@ userinit(void)
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
 
+  u2kvmcopy(p->pagetable, p->kpagetable, 0, p->sz);
+
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
   p->trapframe->sp = PGSIZE;  // user stack pointer
@@ -246,8 +287,20 @@ growproc(int n)
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+    // 内存变大了，要把新增长的部分抄进内核页表
+    if(u2kvmcopy(p->pagetable, p->kpagetable, p->sz, sz) != 0)
+    {
+      uvmdealloc(p->pagetable, sz, p->sz);
+      return -1;
+    }
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
+    // 内存变小了，要解除内核页表中多余部分的映射
+    // PGROUNDUP(sz)为新地址 PGROUNDUP(p->sz) 为旧地址
+    if(PGROUNDUP(sz) < PGROUNDUP(p->sz)){
+      int npages = (PGROUNDUP(p->sz) - PGROUNDUP(sz)) / PGSIZE;
+      uvmunmap(p->kpagetable, PGROUNDUP(sz), npages, 0); 
+    }
   }
   p->sz = sz;
   return 0;
@@ -273,6 +326,9 @@ fork(void)
     release(&np->lock);
     return -1;
   }
+
+  u2kvmcopy(np->pagetable, np->kpagetable, 0, p->sz);
+
   np->sz = p->sz;
 
   np->parent = p;
@@ -473,8 +529,15 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
-        swtch(&c->context, &p->context);
 
+        // 切换satp寄存器为当前进程的的内核页表，参考kvminithart
+        w_satp(MAKE_SATP(p->kpagetable));
+        sfence_vma(); // 刷新LTB缓存
+
+        swtch(&c->context, &p->context);
+        
+        // 没有进程运行时scheduler()应当使用kernel_pagetable
+        kvminithart();
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;

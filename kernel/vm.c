@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -55,6 +57,38 @@ kvminithart()
   w_satp(MAKE_SATP(kernel_pagetable));
   sfence_vma();
 }
+
+pagetable_t
+proc_kpagetable() // 参照上面的函数，为进程创建一个专属的内核页表，并初始化必要的设备映射
+{
+  pagetable_t kpt = (pagetable_t) kalloc(); // 申请一页物理内存作为根目录
+  if(kpt == 0) return 0;
+  memset(kpt, 0, PGSIZE); // 清空内容
+
+  // uart registers
+  mappages(kpt, UART0, PGSIZE, UART0, PTE_R | PTE_W);
+
+  // virtio mmio disk interface
+  mappages(kpt, VIRTIO0, PGSIZE, VIRTIO0, PTE_R | PTE_W);
+
+  // PLIC
+  mappages(kpt, PLIC, 0x400000, PLIC, PTE_R | PTE_W);
+
+  // CLINT
+  // mappages(kpt, CLINT, 0x400000, CLINT, PTE_R | PTE_W);
+
+  // map kernel text executable and read-only.
+  mappages(kpt, KERNBASE, (uint64)etext-KERNBASE, KERNBASE, PTE_R | PTE_X);
+
+  // map kernel data and the physical RAM we'll make use of.
+  mappages(kpt, (uint64)etext, PHYSTOP-(uint64)etext, (uint64)etext, PTE_R | PTE_W);
+
+  // map the trampoline for trap entry/exit
+  mappages(kpt, TRAMPOLINE, PGSIZE, (uint64)trampoline, PTE_R | PTE_X);
+
+  return kpt;
+}
+
 
 // Return the address of the PTE in page table pagetable
 // that corresponds to virtual address va.  If alloc!=0,
@@ -132,7 +166,14 @@ kvmpa(uint64 va)
   pte_t *pte;
   uint64 pa;
   
-  pte = walk(kernel_pagetable, va, 0);
+  struct proc *p = myproc();
+  if(p != 0){
+    pte = walk(p->kpagetable, va, 0);
+  } else {
+    // 否则（比如系统刚启动时），查全局内核页表
+    pte = walk(kernel_pagetable, va, 0);
+  }
+
   if(pte == 0)
     panic("kvmpa");
   if((*pte & PTE_V) == 0)
@@ -379,23 +420,24 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
-  uint64 n, va0, pa0;
+  // uint64 n, va0, pa0;
 
-  while(len > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > len)
-      n = len;
-    memmove(dst, (void *)(pa0 + (srcva - va0)), n);
+  // while(len > 0){
+  //   va0 = PGROUNDDOWN(srcva);
+  //   pa0 = walkaddr(pagetable, va0);
+  //   if(pa0 == 0)
+  //     return -1;
+  //   n = PGSIZE - (srcva - va0);
+  //   if(n > len)
+  //     n = len;
+  //   memmove(dst, (void *)(pa0 + (srcva - va0)), n);
 
-    len -= n;
-    dst += n;
-    srcva = va0 + PGSIZE;
-  }
-  return 0;
+  //   len -= n;
+  //   dst += n;
+  //   srcva = va0 + PGSIZE;
+  // }
+  // return 0;
+  return copyin_new(pagetable, dst, srcva, len);
 }
 
 // Copy a null-terminated string from user to kernel.
@@ -405,38 +447,130 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
-  uint64 n, va0, pa0;
-  int got_null = 0;
+  // uint64 n, va0, pa0;
+  // int got_null = 0;
 
-  while(got_null == 0 && max > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > max)
-      n = max;
+  // while(got_null == 0 && max > 0){
+  //   va0 = PGROUNDDOWN(srcva);
+  //   pa0 = walkaddr(pagetable, va0);
+  //   if(pa0 == 0)
+  //     return -1;
+  //   n = PGSIZE - (srcva - va0);
+  //   if(n > max)
+  //     n = max;
 
-    char *p = (char *) (pa0 + (srcva - va0));
-    while(n > 0){
-      if(*p == '\0'){
-        *dst = '\0';
-        got_null = 1;
-        break;
-      } else {
-        *dst = *p;
+  //   char *p = (char *) (pa0 + (srcva - va0));
+  //   while(n > 0){
+  //     if(*p == '\0'){
+  //       *dst = '\0';
+  //       got_null = 1;
+  //       break;
+  //     } else {
+  //       *dst = *p;
+  //     }
+  //     --n;
+  //     --max;
+  //     p++;
+  //     dst++;
+  //   }
+
+  //   srcva = va0 + PGSIZE;
+  // }
+  // if(got_null){
+  //   return 0;
+  // } else {
+  //   return -1;
+  // }
+  return copyinstr_new(pagetable, dst, srcva, max);
+}
+
+void vmprint_helper(pagetable_t pagetable, int level)
+{
+  for(int i = 0; i < 512; i++)
+  {
+    pte_t pte = pagetable[i];
+    if(pte & PTE_V) // 如果存在 目录或者叶子
+    {
+      for(int j = 0; j < level; j++)
+      {
+        printf(".. ");
       }
-      --n;
-      --max;
-      p++;
-      dst++;
+      uint64 pa = PTE2PA(pte); // 将转化为
+      printf("%d: pte %p pa %p\n", i, pte, pa);
+      
+      if((pte & (PTE_R|PTE_W|PTE_X)) == 0) // 下一级页表
+      {
+        vmprint_helper((pagetable_t)pa, level + 1);
+      }
     }
+  }
+}
 
-    srcva = va0 + PGSIZE;
+void vmprint(pagetable_t pagetable)
+{ 
+  printf("page table %p\n", pagetable); // 打印表头
+  vmprint_helper(pagetable, 1);
+}
+
+
+void
+free_kpt_dirs(pagetable_t kpt) // 删目录
+{
+  for(int i = 0; i < 512; i++)
+  {
+    pte_t pte = kpt[i];
+    if(pte & PTE_V)
+    {
+      if((pte & (PTE_R|PTE_W|PTE_X)) == 0)
+      {
+        uint64 child = PTE2PA(pte);
+        free_kpt_dirs((pagetable_t)child);
+      }
+      kpt[i] = 0;
+    }
   }
-  if(got_null){
-    return 0;
-  } else {
-    return -1;
+  kfree((void*)kpt);
+}
+void
+proc_freekpagetable(pagetable_t kpt, uint64 kstack)
+{
+  // 利用 xv6 内置的 walk 函数找到 kstack 对应的叶子节点
+  //kstack 是在 allocproc 里用 kalloc() 专门为这个进程申请的栈
+  pte_t *pte = walk(kpt, kstack, 0);
+  if(pte && (*pte & PTE_V))
+  {
+    kfree((void*)PTE2PA(*pte)); // 销毁物理地址
   }
+  free_kpt_dirs(kpt); // 删除页表树
+}
+
+// 将用户页表的映射抄一份到内核页表
+int
+u2kvmcopy(pagetable_t upagetable, pagetable_t kpagetable, uint64 oldsz, uint64 newsz)
+{
+  pte_t *pte;
+  uint64 pa, i;
+  uint flags;
+
+  // 将起始地址向上对齐到页边界
+  oldsz = PGROUNDUP(oldsz);
+
+  for(i = oldsz; i < newsz; i += PGSIZE)
+  {
+    if((pte = walk(upagetable, i, 0)) == 0)
+      panic("u2kvmcopy: pte should exist");
+    if((*pte & PTE_V) == 0)
+      panic("u2kvmcopy: page not present");
+    pa = PTE2PA(*pte);
+
+    flags = PTE_FLAGS(*pte) & (~PTE_U); // 清除PTE_U标志位
+
+    // 将同样的物理地址和修改后的权限，映射到内核页表中
+    if(mappages(kpagetable, i, PGSIZE, pa, flags) != 0)
+    { 
+      uvmunmap(kpagetable, 0, i / PGSIZE, 0);
+      return -1;
+    }
+  }
+  return 0;
 }
