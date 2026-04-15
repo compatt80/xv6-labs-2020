@@ -70,6 +70,7 @@ sys_sleep(void)
     sleep(&ticks, &tickslock);
   }
   release(&tickslock);
+  backtrace();
   return 0;
 }
 
@@ -94,4 +95,34 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+// 设置报警器
+uint64
+sys_sigalarm(void)
+{
+  int n;
+  uint64 fn;
+  if((argint(0, &n) < 0) || (argaddr(1, &fn) < 0))
+    return -1;
+
+  struct proc *p = myproc();
+  p->alarm_interval = n;
+  p->alarm_handler = (void(*)())fn;
+  p->ticks_count = 0;
+  p->is_alarming = 0;
+
+  return 0;
+}
+
+// 返回
+uint64
+sys_sigreturn(void)
+{
+  struct proc *p = myproc();
+
+  memmove(p->trapframe, p->alarm_trapframe, sizeof(struct trapframe));
+  p->is_alarming = 0;
+
+  return p->trapframe->a0;
 }

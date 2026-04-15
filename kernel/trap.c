@@ -76,9 +76,27 @@ usertrap(void)
   if(p->killed)
     exit(-1);
 
-  // give up the CPU if this is a timer interrupt.
+  // give up the CPU if this is a timer interrupt. 设备中断处理
   if(which_dev == 2)
+  {
+    if(p->alarm_interval != 0 && p->is_alarming == 0)
+    {
+      p->ticks_count += 1;
+
+      if(p->ticks_count == p->alarm_interval)
+      {
+        p->is_alarming = 1;
+        p->ticks_count = 0;
+
+        memmove(p->alarm_trapframe, p->trapframe, sizeof(struct trapframe));
+
+        p->trapframe->epc = (uint64)p->alarm_handler;
+      }
+    }
+
     yield();
+  }
+  
 
   usertrapret();
 }
