@@ -67,7 +67,36 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  }
+  else if(r_scause() == 13 || r_scause() == 15)
+  {
+    uint64 fault_va = r_stval();
+
+    if(fault_va >= p->sz || fault_va < PGROUNDDOWN(p->trapframe->sp)) // 提示2 6
+    {
+      p->killed = 1;
+    }
+
+    else
+    {
+      uint64 va = PGROUNDDOWN(fault_va); 
+      char *mem = kalloc();
+      if(mem == 0){ // 如果物理内存耗尽，只能杀掉进程
+        p -> killed = 1;
+      }
+      else
+      {
+        memset(mem, 0, PGSIZE); // 将物理页清零 提示5
+        if(mappages(p->pagetable, va, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_X|PTE_U) != 0) // 虚拟地址向物理地址映射
+        {
+          kfree(mem);
+          p->killed = 1;
+        }
+      }
+    }
+  }
+  
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
