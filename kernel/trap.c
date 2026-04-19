@@ -37,6 +37,7 @@ void
 usertrap(void)
 {
   int which_dev = 0;
+  
 
   if((r_sstatus() & SSTATUS_SPP) != 0)
     panic("usertrap: not from user mode");
@@ -65,9 +66,48 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if((which_dev = devintr()) != 0){
+  } 
+  
+  else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } 
+  
+  else if(r_scause() == 15) // 页面错误
+  {
+    uint64 fault_va = r_stval();
+    if(fault_va >= p->sz) // 对应提示：如果出现COW页面错误并且没有可用内存，则应终止进程。
+    {
+      p->killed = 1;
+    }
+    else
+    {
+      pte_t *pte = walk(p->pagetable, fault_va, 0); // 找虚拟地址对应的页表项
+      if(pte != 0 && (*pte & PTE_V) && (*pte & PTE_C))
+      {
+        uint64 pa = PTE2PA(*pte); // 转化为物理地址
+        char *new_page = kalloc(); // 分配新物理页
+
+        if(new_page == 0)
+        {
+          p->killed = 1; // 对应提示：没有可用内存，则应终止进程
+        }
+        else
+        {
+          memmove(new_page, (char*)pa, PGSIZE); // 对应提示：将旧页面复制到新页面
+          uint flags = PTE_FLAGS(*pte);
+          *pte = PA2PTE(new_page) | ((flags | PTE_W) & ~PTE_C); // 对应提示：将新页面添加到PTE中并设置PTE_W。
+          kfree((void*)pa);
+        }
+      }
+      else
+      {
+        p->killed = 1;
+      }
+    }
+  }
+  
+  
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;

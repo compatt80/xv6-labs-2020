@@ -311,23 +311,38 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  // char *mem;
 
-  for(i = 0; i < sz; i += PGSIZE){
+  for(i = 0; i < sz; i += PGSIZE)
+  {
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+
+    if(flags & PTE_W)
+    {
+      flags = (flags | PTE_C) & ~PTE_W;
+      *pte = PA2PTE(pa) | flags;
+    }
+
+    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0)
+    {
       goto err;
     }
+
+    kaddref((void*)pa); // 映射成功 引用+1
+    // if((mem = kalloc()) == 0)
+    //   goto err;
+    // memmove(mem, (char*)pa, PGSIZE);
+    // if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+    //   kfree(mem);
+    //   goto err;
+    // }
   }
+  // sfence_vma(); // 刷新TLB
   return 0;
 
  err:
@@ -361,6 +376,31 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
       return -1;
+
+    pte_t *pte = walk(pagetable, va0, 0);
+    if(pte == 0 || (*pte & PTE_V) ==0 || (*pte & PTE_U) == 0)
+    {
+      return -1;
+    }
+    if(*pte & PTE_C)
+    {
+      uint64 pa = PTE2PA(*pte); // 转化为物理地址
+      char *new_page = kalloc(); // 分配新物理页
+
+      if(new_page == 0)
+      {
+        return -1; // 对应提示：没有可用内存，则应终止进程
+      }
+      else
+      {
+        memmove(new_page, (char*)pa, PGSIZE); // 对应提示：将旧页面复制到新页面
+        uint flags = PTE_FLAGS(*pte);
+        *pte = PA2PTE(new_page) | ((flags | PTE_W) & ~PTE_C); // 对应提示：将新页面添加到PTE中并设置PTE_W。
+        kfree((void*)pa);
+      }
+    }
+    pa0 = PTE2PA(*pte);
+
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;

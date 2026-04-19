@@ -19,6 +19,11 @@ struct run {
 };
 
 struct {
+  struct spinlock lock; // 自旋锁
+  int count[PHYSTOP / PGSIZE]; // 按照提示：您可以用页的物理地址除以4096对数组进行索引
+}ref;
+
+struct {
   struct spinlock lock;
   struct run *freelist;
 } kmem;
@@ -27,8 +32,9 @@ void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
+  initlock(&ref.lock, "ref_count"); // 初始化引用计数的锁
   freerange(end, (void*)PHYSTOP);
-}
+} 
 
 void
 freerange(void *pa_start, void *pa_end)
@@ -51,6 +57,13 @@ kfree(void *pa)
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
+  acquire(&ref.lock);
+  if(--ref.count[(uint64)pa / PGSIZE] > 0)
+  {
+    release(&ref.lock);
+    return;
+  }
+  release(&ref.lock);
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 
@@ -77,6 +90,20 @@ kalloc(void)
   release(&kmem.lock);
 
   if(r)
+  {
     memset((char*)r, 5, PGSIZE); // fill with junk
+    acquire(&ref.lock);
+    ref.count[(uint64)r / PGSIZE] = 1; // 当kalloc()分配页时，将页的引用计数设置为1。
+    release(&ref.lock);
+  }
   return (void*)r;
+
+}
+
+// 增加物理页的引用计数
+void kaddref(void *pa) // 传入物理地址，计算器所在物理页，+1
+{
+  acquire(&ref.lock);
+  ref.count[(uint64)pa / PGSIZE]++;
+  release(&ref.lock);
 }
