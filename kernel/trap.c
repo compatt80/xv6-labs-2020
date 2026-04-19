@@ -86,7 +86,7 @@ usertrap(void)
       }
       else
       {
-        memset(mem, 0, PGSIZE); // 将物理页清零 提示5
+        memset(mem, 0, PGSIZE); // 将物理页清零
         if(mappages(p->pagetable, va, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_X|PTE_U) != 0) // 虚拟地址向物理地址映射
         {
           kfree(mem);
