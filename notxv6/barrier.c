@@ -6,6 +6,7 @@
 
 static int nthread = 1;
 static int round = 0;
+pthread_mutex_t lock; // declare a lock
 
 struct barrier {
   pthread_mutex_t barrier_mutex;
@@ -27,10 +28,30 @@ barrier()
 {
   // YOUR CODE HERE
   //
+  pthread_mutex_lock(&bstate.barrier_mutex); // acquire lock 
+
+  bstate.nthread++;
+
+  int local_round = bstate.round;
+
+  if(bstate.nthread == nthread)
+  {
+    bstate.round++; // 每次当所有线程都到达屏障时，都应增加bstate.round
+    bstate.nthread = 0;
+    pthread_cond_broadcast(&bstate.barrier_cond);  
+  }
+  else
+  {
+    while(local_round == bstate.round)
+    {
+      pthread_cond_wait(&bstate.barrier_cond, &bstate.barrier_mutex);
+    }
+  }
+
   // Block until all threads have called barrier() and
   // then increment bstate.round.
   //
-  
+  pthread_mutex_unlock(&bstate.barrier_mutex); // release lock
 }
 
 static void *
@@ -57,6 +78,8 @@ main(int argc, char *argv[])
   void *value;
   long i;
   double t1, t0;
+
+  pthread_mutex_init(&lock, NULL); // initialize the lock 
 
   if (argc < 2) {
     fprintf(stderr, "%s: %s nthread\n", argv[0], argv[0]);

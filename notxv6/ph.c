@@ -8,14 +8,17 @@
 #define NBUCKET 5
 #define NKEYS 100000
 
-struct entry {
+struct entry { // 哈希节点
   int key;
   int value;
   struct entry *next;
 };
-struct entry *table[NBUCKET];
+struct entry *table[NBUCKET]; // 哈希表，每个有一个节点
 int keys[NKEYS];
 int nthread = 1;
+
+// pthread_mutex_t lock; // declare a lock
+pthread_mutex_t locks[NBUCKET];
 
 double
 now()
@@ -27,32 +30,37 @@ now()
 
 static void 
 insert(int key, int value, struct entry **p, struct entry *n)
-{
+{ // 头插法
   struct entry *e = malloc(sizeof(struct entry));
   e->key = key;
   e->value = value;
-  e->next = n;
-  *p = e;
+  e->next = n; // 新节点的尾巴，连上旧的链表头
+  *p = e; // 把桶的指针指向这个新节点
 }
 
 static 
 void put(int key, int value)
 {
-  int i = key % NBUCKET;
+
+  int i = key % NBUCKET; // 哈希函数
+
+  pthread_mutex_lock(&locks[i]); // acquire lock
 
   // is the key already present?
   struct entry *e = 0;
   for (e = table[i]; e != 0; e = e->next) {
-    if (e->key == key)
+    if (e->key == key) // 找到了
       break;
   }
-  if(e){
+  if(e){ // 存在直接插入
     // update the existing key.
     e->value = value;
-  } else {
+  } else { // 节点不存在插入新节点
     // the new is new.
     insert(key, value, &table[i], table[i]);
   }
+
+  pthread_mutex_unlock(&locks[i]); // release lock
 }
 
 static struct entry*
@@ -60,12 +68,13 @@ get(int key)
 {
   int i = key % NBUCKET;
 
-
+  pthread_mutex_lock(&locks[i]); // acquire lock 
+  
   struct entry *e = 0;
   for (e = table[i]; e != 0; e = e->next) {
     if (e->key == key) break;
   }
-
+  pthread_mutex_unlock(&locks[i]); // release lock
   return e;
 }
 
@@ -99,6 +108,13 @@ get_thread(void *xa)
 int
 main(int argc, char *argv[])
 {
+
+  // pthread_mutex_init(&lock, NULL); // initialize the lock
+  for(int i = 0; i < NBUCKET; i++)
+  {
+    pthread_mutex_init(&locks[i], NULL);
+  }
+
   pthread_t *tha;
   void *value;
   double t1, t0;
