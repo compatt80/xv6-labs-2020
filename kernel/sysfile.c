@@ -322,22 +322,22 @@ sys_open(void) // 将一个用户提供的字符串路径，转化为一个可�
     }
     char target[MAXPATH];
     if(readi(ip, 0, (uint64)target, 0, MAXPATH) <= 0) // 读inode的数据块到内核的target缓冲区
-    {
+    {// readi 读 ip_B 的数据块，把字符串 "/real.txt" 读进了 target 数组。
       iunlockput(ip);
       end_op();
       return -1;
     }
 
     //调用mamei之前必须先解锁ip
-    iunlockput(ip);
+    iunlockput(ip); // iunlockput(ip_B)
 
     // 根据读出的目标路径重新寻找 inode
-    if((ip = namei(target)) == 0){ // 调用 namei 顺藤摸瓜找到目标 Inode
+    if((ip = namei(target)) == 0){ // 调用 namei 顺藤摸瓜找到目标 Inode  ip = namei("/real.txt")
       end_op();
       return -1; // 目标不存在则失败（提示 5）
     }
 
-    ilock(ip); // 必须在重新上锁
+    ilock(ip); // 必须在重新上锁  
     depth++;  
   }
 
