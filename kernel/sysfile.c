@@ -284,7 +284,7 @@ create(char *path, short type, short major, short minor)
 }
 
 uint64
-sys_open(void)
+sys_open(void) // 将一个用户提供的字符串路径，转化为一个可以供程序读写的整数文件描述符fd
 {
   char path[MAXPATH];
   int fd, omode;
@@ -298,22 +298,53 @@ sys_open(void)
   begin_op();
 
   if(omode & O_CREATE){
-    ip = create(path, T_FILE, 0, 0);
+    ip = create(path, T_FILE, 0, 0); // 模式一：新建普通文件
     if(ip == 0){
       end_op();
       return -1;
     }
-  } else {
-    if((ip = namei(path)) == 0){
+  } 
+  else {
+    if((ip = namei(path)) == 0){ // 模式二：找已存在的文件
       end_op();
       return -1;
     }
-    ilock(ip);
-    if(ip->type == T_DIR && omode != O_RDONLY){
+    ilock(ip); // 找到后立即上锁
+  }
+  // 新增
+  int depth = 0;
+  while(ip->type == T_SYMLINK && !(omode & O_NOFOLLOW)) // 软连接且不是不跟随软链接标志
+  {
+    if(depth >= 10){
       iunlockput(ip);
       end_op();
       return -1;
     }
+    char target[MAXPATH];
+    if(readi(ip, 0, (uint64)target, 0, MAXPATH) <= 0) // 读inode的数据块到内核的target缓冲区
+    {
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
+
+    //调用mamei之前必须先解锁ip
+    iunlockput(ip);
+
+    // 根据读出的目标路径重新寻找 inode
+    if((ip = namei(target)) == 0){ // 调用 namei 顺藤摸瓜找到目标 Inode
+      end_op();
+      return -1; // 目标不存在则失败（提示 5）
+    }
+
+    ilock(ip); // 必须在重新上锁
+    depth++;  
+  }
+
+  if(ip->type == T_DIR && omode != O_RDONLY){ // 如果是目录并且不是只读
+      iunlockput(ip);
+      end_op();
+      return -1;
   }
 
   if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
@@ -323,6 +354,8 @@ sys_open(void)
   }
 
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
+    // filealloc(): 在内核的全局文件表里申请一个 struct file 结构体，用来记录当前的读写偏移量和权限。
+    //fdalloc(f): 在当前进程的私人列表（文件描述符表）里找一个空闲的坑位，把刚才申请的 file 挂上去
     if(f)
       fileclose(f);
     iunlockput(ip);
@@ -341,6 +374,7 @@ sys_open(void)
   f->readable = !(omode & O_WRONLY);
   f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
 
+  // 处理文件截断
   if((omode & O_TRUNC) && ip->type == T_FILE){
     itrunc(ip);
   }
@@ -482,5 +516,35 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64
+sys_symlink(void)  // 创建一个指向另一个文件的快捷方式 
+{
+  char target[MAXPATH], path[MAXPATH]; // target 目标路径；path 软连接路径
+  struct inode *ip;
+
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0){
+    return -1;
+  }
+
+  begin_op(); // 开始事务 日志 保证原子性
+  if((ip = create(path, T_SYMLINK, 0, 0)) == 0) // 创建一个i节点，以软连接形式，i节点存放在path路径里,且本i节点加锁
+  {
+    end_op();
+    return -1;  
+  }
+
+  // 将 target 路径字符串写到这个 inode 的第一个数据块里
+  if(writei(ip, 0, (uint64)target, 0, strlen(target)+1) != strlen(target)+1)
+  {
+    iunlockput(ip); // 解锁并释放 inode
+    end_op();
+    return -1;
+  }
+
+  iunlockput(ip); // 必须解锁并释放这个新建的 inode！
+  end_op();       // 结束事务
   return 0;
 }

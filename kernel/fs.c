@@ -375,26 +375,58 @@ iunlockput(struct inode *ip)
 // Return the disk block address of the nth block in inode ip.
 // If there is no such block, bmap allocates one.
 static uint
-bmap(struct inode *ip, uint bn)
-{
+bmap(struct inode *ip, uint bn) // bn是逻辑块号 ip指向目标文件/目录的 Inode（索引结点）的指针
+{ // 将逻辑块号映射到物理块号
   uint addr, *a;
   struct buf *bp;
 
+  // 处理直接块
   if(bn < NDIRECT){
-    if((addr = ip->addrs[bn]) == 0)
-      ip->addrs[bn] = addr = balloc(ip->dev);
+    if((addr = ip->addrs[bn]) == 0) // 如果没给它分配磁盘块
+      ip->addrs[bn] = addr = balloc(ip->dev); // 在指定设备上分配磁盘块
     return addr;
   }
-  bn -= NDIRECT;
+  bn -= NDIRECT; // 偏移调整 为了后续在“间接块”数组中从索引 0 开始重新计算
 
+  // 处理一级间接块
   if(bn < NINDIRECT){
     // Load indirect block, allocating if necessary.
-    if((addr = ip->addrs[NDIRECT]) == 0)
+    if((addr = ip->addrs[NDIRECT]) == 0) // 分配最后一个“数据块 间接块”的磁盘块
       ip->addrs[NDIRECT] = addr = balloc(ip->dev);
+    bp = bread(ip->dev, addr); // 将间接块内容读到内存缓冲
+    a = (uint*)bp->data;
+    if((addr = a[bn]) == 0){// 如果没给它分配磁盘块
+      a[bn] = addr = balloc(ip->dev);
+      log_write(bp); // 将这次修改登记到文件系统的日志事务
+    }
+    brelse(bp); // 释放
+    return addr; // 返回磁盘块号
+  }
+  bn -= NINDIRECT;
+
+  if(bn < NDOUBLY)
+  {
+    if((addr = ip->addrs[NDIRECT+1]) == 0)
+    {
+      ip->addrs[NDIRECT+1] = addr = balloc(ip->dev);
+    }
+
     bp = bread(ip->dev, addr);
     a = (uint*)bp->data;
-    if((addr = a[bn]) == 0){
-      a[bn] = addr = balloc(ip->dev);
+    uint out = bn / NINDIRECT; // 外层块索引
+    uint in = bn % NINDIRECT; // 内层块索引
+    if((addr = a[out]) == 0)
+    {
+      a[out] = addr = balloc(ip->dev);
+      log_write(bp);
+    }
+    brelse(bp);
+
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    if((addr = a[in]) == 0)
+    {
+      a[in] = addr = balloc(ip->dev);
       log_write(bp);
     }
     brelse(bp);
@@ -403,23 +435,24 @@ bmap(struct inode *ip, uint bn)
 
   panic("bmap: out of range");
 }
-
 // Truncate inode (discard contents).
 // Caller must hold ip->lock.
 void
 itrunc(struct inode *ip)
-{
+{ // 清空一个文件，释放它在磁盘上占用的所有物理数据块，并将其大小重置为 0。
   int i, j;
-  struct buf *bp;
-  uint *a;
+  struct buf *bp, *bp2;
+  uint *a, *a2;
 
+  // 释放直接块
   for(i = 0; i < NDIRECT; i++){
-    if(ip->addrs[i]){
+    if(ip->addrs[i]){ // 只要不是0，说明分配了物理地址
       bfree(ip->dev, ip->addrs[i]);
-      ip->addrs[i] = 0;
+      ip->addrs[i] = 0; // 将其设置为0
     }
   }
 
+  // 一级间接块
   if(ip->addrs[NDIRECT]){
     bp = bread(ip->dev, ip->addrs[NDIRECT]);
     a = (uint*)bp->data;
@@ -430,6 +463,30 @@ itrunc(struct inode *ip)
     brelse(bp);
     bfree(ip->dev, ip->addrs[NDIRECT]);
     ip->addrs[NDIRECT] = 0;
+  }
+
+  // 二级间接块
+  if(ip->addrs[NDIRECT+1])
+  {
+    bp = bread(ip->dev, ip->addrs[NDIRECT+1]);
+    a = (uint*)bp->data;
+    for(i = 0; i < NINDIRECT; i++)
+    {
+      if(a[i])
+      {
+        bp2 = bread(ip->dev, a[i]);
+        a2 = (uint*)bp2->data;
+        for(j = 0; j < NINDIRECT; j++){
+          if(a2[j])
+            bfree(ip->dev, a2[j]);
+        }
+        brelse(bp2);
+        bfree(ip->dev, a[i]);
+      }
+    }
+    brelse(bp);
+    bfree(ip->dev, ip->addrs[NDIRECT+1]);
+    ip->addrs[NDIRECT+1] = 0;
   }
 
   ip->size = 0;
