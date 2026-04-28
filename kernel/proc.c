@@ -701,7 +701,7 @@ count_active_procs(void)
 {
   uint64 count = 0;
   struct proc *p;
-
+  // xv6 预分配了一个大小为 NPROC (64) 的数组来存进程
   for(p = proc; p < &proc[NPROC]; p++)
   {
     if(p->state != UNUSED)

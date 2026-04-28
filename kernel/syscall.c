@@ -160,6 +160,12 @@ static char *syscall_names[] = {
 [SYS_sysinfo] "sysinfo",
 };
 
+// 所有的系统调用都必须经过 syscall() 函数
+// trace 32 grep hello README
+// 掩码为32 到sys_trace 把 myproc()的掩码设置为32
+// 然后exec grep grep会进行read系统调用
+// read系统调用会经过这里的syscall函数
+// 
 void
 syscall(void)
 {
