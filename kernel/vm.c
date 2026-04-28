@@ -283,8 +283,13 @@ freewalk(pagetable_t pagetable)
 void
 uvmfree(pagetable_t pagetable, uint64 sz)
 {
-  if(sz > 0)
-    uvmunmap(pagetable, 0, PGROUNDUP(sz)/PGSIZE, 1);
+  if(sz > 0){
+    for(uint64 a = 0; a < PGROUNDUP(sz); a += PGSIZE){
+      pte_t *pte = walk(pagetable, a, 0);
+      if(pte != 0 && (*pte & PTE_V))
+        uvmunmap(pagetable, a, 1, 1);
+    }
+  }
   freewalk(pagetable);
 }
 
@@ -304,9 +309,9 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
+      continue;
     if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+      continue;
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
@@ -320,7 +325,11 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   return 0;
 
  err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
+  for(uint64 a = 0; a < i; a += PGSIZE){
+    pte_t *pte = walk(new, a, 0);
+    if(pte != 0 && (*pte & PTE_V))
+      uvmunmap(new, a, 1, 1);
+  }
   return -1;
 }
 

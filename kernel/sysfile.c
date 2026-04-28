@@ -484,3 +484,122 @@ sys_pipe(void)
   }
   return 0;
 }
+uint64
+sys_mmap(void)
+{
+  uint64 addr;
+  int length;
+  int prot;
+  int flags;
+  int vfd;
+  struct file* vfile;
+  int offset;
+  uint64 err = 0xffffffffffffffff; // mmap返回该地址，如果失败则返回0xffffffffffffffff
+
+  if(argaddr(0, &addr) < 0 || argint(1, &length) < 0 || argint(2, &prot) < 0
+      || argint(3, &flags) < 0 || argfd(4, &vfd, &vfile) < 0 || argint(5, &offset) < 0 )
+  {
+    return err;
+  }
+  // 实验提示中假定addr和offset为0
+  if(addr != 0 || offset != 0 || length < 0)
+    return err;
+
+  // 文件不可写则不允许拥有PROT_WRITE权限时映射为MAP_SHARED
+  if(vfile->writable == 0 && (prot & PROT_WRITE) != 0 && flags == MAP_SHARED)
+    return err;
+
+  struct proc* p = myproc();
+  if(p->sz + length > MAXVA)
+  {
+    return err;
+  }
+
+  for(int i = 0; i < 16; i++)
+  {
+    if(p->vmas[i].used == 0)
+    {
+      p->vmas[i].used = 1;
+      p->vmas[i].addr = p->sz;
+      p->vmas[i].len = length;
+      p->vmas[i].flags = flags;
+      p->vmas[i].prot = prot;
+      p->vmas[i].vfile = vfile;
+      p->vmas[i].vfd = vfd;
+      p->vmas[i].offset = offset;
+
+      filedup(vfile); // 增加引用计数
+
+      p->sz += length;
+      return p->vmas[i].addr;
+    }
+  }
+  
+  return err;
+}
+
+uint64
+sys_munmap(void)
+{ 
+  uint64 addr, length;
+  if(argaddr(0, &addr) < 0 || argint(1, (int*)&length) < 0) return -1;
+  struct proc *p = myproc();
+
+  if(length == 0)
+    return -1;
+
+  for(int i = 0; i < 16; i++)
+  {
+    struct vma *v = &p->vmas[i];
+    uint64 end = addr + length;
+    uint64 vend = v->addr + v->len;
+
+    if(v->used && addr >= v->addr && end <= vend)
+    {
+      uint64 a = PGROUNDDOWN(addr);
+      uint64 last = PGROUNDDOWN(end - 1);
+
+      for(; a <= last; a += PGSIZE)
+      {
+        pte_t *pte = walk(p->pagetable, a, 0);
+        if(pte != 0 && (*pte & PTE_V)) // 这一页确实被访问过，并且内核真的为它分配了物理内存
+        { 
+          if(v->flags & MAP_SHARED) // 此时需要写回磁盘
+          {
+            begin_op();
+            ilock(v->vfile->ip);
+            writei(v->vfile->ip, 1, a, v->offset + (a - v->addr), PGSIZE); 
+            // v->offset 为VMA在文件的起始偏移，a - v->addr为这页在 VMA 内部的相对偏移
+            // 1 表示源数据来自用户空间
+            iunlock(v->vfile->ip);
+            end_op();
+          }
+          uvmunmap(p->pagetable, a, 1, 1);  // 解除虚拟内存与物理内存之间的映射关系
+        } 
+      }
+
+      // 更新 VMA 范围或彻底释放
+      // 全额退租
+      if(addr == v->addr && length == v->len)
+      {
+        fileclose(v->vfile); // 减少文件引用计数，可能触发文件真正关闭
+        v->used = 0;
+      }
+
+      // 从头部开始
+      else if(addr == v->addr) 
+      {
+        v->addr += length; // 映射起点往后挪
+        v->len -= length; // 总长度缩短
+        v->offset += length; // 文件偏移量往后推  
+      }
+
+      else // 从尾部开始
+      {
+        v->len -= length; // 总长度缩短
+      }
+      return 0;
+    }
+  }
+  return -1;
+}

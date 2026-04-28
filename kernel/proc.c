@@ -5,6 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
+#include "fcntl.h"
 
 struct cpu cpus[NCPU];
 
@@ -119,6 +123,8 @@ found:
     release(&p->lock);
     return 0;
   }
+
+  memset(&p->vmas, 0, sizeof(p->vmas));
 
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
@@ -266,12 +272,22 @@ int
 fork(void)
 {
   int i, pid;
-  struct proc *np;
+  struct proc *np; // 子进程
   struct proc *p = myproc();
 
   // Allocate process.
   if((np = allocproc()) == 0){
     return -1;
+  }
+
+  // 复制父进程的 VMA 记录到子进程
+  for(int i = 0; i < 16; i++)
+  {
+    if(p->vmas[i].used)
+    {
+      np->vmas[i] = p->vmas[i]; // 直接拷贝
+      filedup(np->vmas[i].vfile);   // 不要忘记增加VMA的struct file的引用计数
+    }
   }
 
   // Copy user memory from parent to child.
@@ -343,6 +359,36 @@ exit(int status)
 
   if(p == initproc)
     panic("init exiting");
+
+  // 清理所有有效的 VMA，将进程的已映射区域取消映射，类似于munmap
+  for(int i = 0; i < 16; i++)
+  {
+    struct vma *v = &p->vmas[i];
+    if(v->used)
+    {
+      uint64 a = v->addr;
+      for(; a < v->addr + v->len; a += PGSIZE)
+      {
+        pte_t *pte = walk(p->pagetable, a, 0);
+        if(pte != 0 && (*pte & PTE_V)) // 这一页确实被访问过，并且内核真的为它分配了物理内存
+        { 
+          if(v->flags & MAP_SHARED) // 此时需要写回磁盘
+          {
+            begin_op();
+            ilock(v->vfile->ip);
+            writei(v->vfile->ip, 1, a, v->offset + (a - v->addr), PGSIZE); 
+            // v->offset 为VMA在文件的起始偏移，a - v->addr为这页在 VMA 内部的相对偏移
+            // 1 表示源数据来自用户空间
+            iunlock(v->vfile->ip);
+            end_op();
+          }
+          uvmunmap(p->pagetable, a, 1, 1);  // 解除虚拟内存与物理内存之间的映射关系
+        } 
+      }
+      fileclose(v->vfile);
+      v->used = 0;
+    }
+  }
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){

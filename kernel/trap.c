@@ -5,6 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
+#include "fcntl.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -67,7 +71,57 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } 
+  else if(r_scause() == 13 || r_scause() == 15)// // 读或写页面错误
+  {
+    uint64 va = r_stval();
+    struct proc *p = myproc();
+    int found = 0;
+
+    for(int i = 0; i < 16; i++)
+    {
+      struct vma *v = &p->vmas[i];
+
+      // 检查缺页地址是否落在合法的 VMA 范围内
+      if(v->used && va >= v->addr && va < v->addr + v->len)
+      {
+        found = 1;
+
+        // 分配物理页
+        void *pa = kalloc();
+        if(pa == 0)
+        {
+          p->killed = 1;
+          break;
+        }
+        memset(pa, 0, PGSIZE);
+
+        // 将文件数据读入该物理页
+        ilock(v->vfile->ip);
+        int read_offset = v->offset + (PGROUNDDOWN(va) - v->addr); 
+        readi(v->vfile->ip, 0, (uint64)pa, read_offset, PGSIZE); // 读入内存
+        iunlock(v->vfile->ip);
+
+        // 权限转换
+        int pte_flags = PTE_U;
+        if(v->prot & PROT_READ) pte_flags |= PTE_R;
+        if(v->prot & PROT_WRITE) pte_flags |= PTE_W;
+        if(v->prot & PROT_EXEC) pte_flags |= PTE_X;
+
+        //  建立页表映射
+        if(mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)pa, pte_flags) != 0) {
+          kfree(pa);
+          p->killed = 1;
+        }
+        break;
+      }
+    }
+    if(!found) p->killed = 1;
+
+  }
+  
+  
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
