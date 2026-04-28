@@ -2,7 +2,7 @@
 #include "kernel/stat.h"
 #include "user/user.h"
 #include "kernel/param.h"
-
+// xargs:把前面的命令的结果 |(管道符把前面的结果当作标准输入) 转换成另一个命令的参数
 int main(int argc, char *argv[])
 {
     if(argc < 2)
@@ -11,21 +11,21 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
-    char *xargv[MAXARG]; // 所有命令的拼接数组 是字符串数组
+    char *xargv[MAXARG]; // 所有命令的拼接数组 是字符串数组 存放xargv后面的参数
     int xargc = 0;
 
     // 识别xargs后面的字符串
     for(int i = 1; i < argc; i++)
     {
-        xargv[xargc++] = argv[i]; 
+        xargv[xargc++] = argv[i]; // 把命令先存到xargv
     }
 
     // 逐行标准读取
     char buf[512]; // 存放读取的字符组合 字符数组
-    char c;
-    int buf_len = 0;
+    char c;   // 每次只读一个字符
+    int buf_len = 0; //  记录当前读取到这一行的第几个字
 
-    while(read(0, &c, sizeof(c)) != 0)
+    while(read(0, &c, sizeof(c)) != 0) // 从标准输入读
     {
         if(c == '\n')
         {
@@ -38,7 +38,7 @@ int main(int argc, char *argv[])
             int pid = fork();
             if(pid == 0) // 子进程
             {
-                exec(xargv[0], xargv);
+                exec(xargv[0], xargv); // 子进程完成命令
                 exit(0);
             }
             else

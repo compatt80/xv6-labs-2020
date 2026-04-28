@@ -4,7 +4,7 @@
 
 void sieve(int left_pipe[2])
 {
-    int p; // 存放第一个素数
+    int p; // p 代表当前进程负责筛选的素数
 
     close(left_pipe[1]); // 只负责从左管道读，关闭写端
 
@@ -31,15 +31,15 @@ void sieve(int left_pipe[2])
 
                 int pid = fork();
 
-                if(pid == 0) // 子进程 新右邻居
+                if(pid == 0) // 子进程 新右邻居 
                 {
-                    close(left_pipe[0]);
+                    close(left_pipe[0]); // 孙子进程：它不需要再保留左边祖父传来的读端了
                     sieve(right_pipe);
                 }
 
                 else
                 {
-                    close(right_pipe[0]);
+                    close(right_pipe[0]); // 当前进程：只往右边写，关掉右边的读端
                     has_right_neighbor = 1;
                 }
             }
@@ -50,10 +50,10 @@ void sieve(int left_pipe[2])
     }
     close(left_pipe[0]);// 左边没数字了，关掉读端
 
-    if(has_right_neighbor == 1)
+    if(has_right_neighbor == 1) // 如果创建了右邻居，必须告诉它 我这边结束了
     {
-        close(right_pipe[1]);
-        wait(0);
+        close(right_pipe[1]); // 关闭右侧写端，右邻居的 read 才会收到 0 从而结束循环
+        wait(0); // 等待右邻居
     }
     exit(0);
 }
@@ -71,10 +71,10 @@ int main()
     }
     else
     {
-        close(initial_pipe[0]);
+        close(initial_pipe[0]);  // 父进程只写不读 关闭读端 0读1写
         for (int i = 2; i <= 35; i++)  // 一直往里写数
         {
-            write(initial_pipe[1], &i, sizeof(i));
+            write(initial_pipe[1], &i, sizeof(i)); // 将 2-35 写入管道
         }
         close(initial_pipe[1]); // 写完
         wait(0); // 等待自己的子进程结束

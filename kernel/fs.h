@@ -54,7 +54,7 @@ struct dinode {
 #define DIRSIZ 14
 
 struct dirent {
-  ushort inum;
-  char name[DIRSIZ];
+  ushort inum; // inode 号
+  char name[DIRSIZ]; // 文件名（在 xv6 中，DIRSIZ 默认是 14 字节）
 };
 

@@ -11,7 +11,7 @@ int main(int argc, char *argv[])
     }
     else
     {
-        sleep(atoi(argv[1]));
+        sleep(atoi(argv[1])); // atoi将字符串转换为数字
         exit(0);
     }
 }

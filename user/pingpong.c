@@ -22,7 +22,7 @@ int main()
         exit(1);
     }
 
-    else if(pid == 0) // 子进程
+    else if(pid == 0) // 子进程 读父进程的传输字符(p2c[0]) 然后打印 最后向父进程写(c2p[1])
     {
         close(p2c[1]);
         close(c2p[0]);
@@ -39,21 +39,21 @@ int main()
         exit(0);
     }
 
-    else // 父进程
+    else // 父进程 向子进程写一个字节(p2c[1]) 然后读子进程发的字节(c2p[0]) 然后打印
     {
-        close(p2c[0]);
-        close(c2p[1]);
+        close(p2c[0]); // 关闭父向子的读
+        close(c2p[1]); // 关闭子向父的写
 
-        write(p2c[1], buf , 1);
+        write(p2c[1], buf , 1); // 必须先写
 
-        read(c2p[0],buf,1);
+        read(c2p[0],buf,1); // 然后再读
 
-        printf("%d: received pong\n" , getpid());
+        printf("%d: received pong\n" , getpid()); // 打印
 
 
 
         close(p2c[1]);
-        close(c2p[0]);
+        close(c2p[0]); // 全部关掉
 
         exit(0);
     }
