@@ -495,7 +495,7 @@ void vmprint_helper(pagetable_t pagetable, int level)
       {
         printf(".. ");
       }
-      uint64 pa = PTE2PA(pte); // 将转化为
+      uint64 pa = PTE2PA(pte); // 将其转化为物理地址
       printf("%d: pte %p pa %p\n", i, pte, pa);
       
       if((pte & (PTE_R|PTE_W|PTE_X)) == 0) // 下一级页表
@@ -518,7 +518,7 @@ free_kpt_dirs(pagetable_t kpt) // 删目录
 {
   for(int i = 0; i < 512; i++)
   {
-    pte_t pte = kpt[i];
+    pte_t pte = kpt[i]; 
     if(pte & PTE_V)
     {
       if((pte & (PTE_R|PTE_W|PTE_X)) == 0)
