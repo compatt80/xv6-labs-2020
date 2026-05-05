@@ -32,17 +32,17 @@ barrier()
 
   bstate.nthread++;
 
-  int local_round = bstate.round;
+  int local_round = bstate.round; // 当前的轮次
 
   if(bstate.nthread == nthread)
   {
     bstate.round++; // 每次当所有线程都到达屏障时，都应增加bstate.round
     bstate.nthread = 0;
-    pthread_cond_broadcast(&bstate.barrier_cond);  
+    pthread_cond_broadcast(&bstate.barrier_cond);   // 唤醒等待进程
   }
   else
   {
-    while(local_round == bstate.round)
+    while(local_round == bstate.round) // 如果轮次改变 则不进入while循环
     {
       pthread_cond_wait(&bstate.barrier_cond, &bstate.barrier_mutex);
     }
