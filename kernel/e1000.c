@@ -93,7 +93,7 @@ e1000_init(uint32 *xregs)
 }
 
 int
-e1000_transmit(struct mbuf *m)
+e1000_transmit(struct mbuf *m) // 发送数据
 {
   //
   // Your code here.
@@ -102,12 +102,47 @@ e1000_transmit(struct mbuf *m)
   // the TX descriptor ring so that the e1000 sends it. Stash
   // a pointer so that it can be freed after sending.
   //
-  
+  acquire(&e1000_lock); // 因为可能有多个进程同时发送，必须加锁
+
+  // 读取 E1000_TDT 寄存器，获取当前 TX 环的索引
+  uint32 idx = regs[E1000_TDT];
+
+  // 如果这个位置的 DD 位（Done 标志）没有被设置，
+  // 说明网卡还没把上一个放在这的数据发完。
+  if((tx_ring[idx].status & E1000_TXD_STAT_DD) ==  0)
+  {
+    release(&e1000_lock);
+    return -1;
+  }
+
+  // 否则，使用mbuffree()释放从该描述符传输的最后一个mbuf
+  if(tx_mbufs[idx])
+  {
+    mbuffree(tx_mbufs[idx]);
+  }
+
+  // 将我们要发送的数据包的物理地址告诉网卡
+  tx_ring[idx].addr = (uint64)m->head;
+  tx_ring[idx].length = (uint64)m->len;
+
+  // EOP表示这是一个完整包的结尾，RS要求网卡发完后把 DD 位置 1 通知我们
+  // 设置cmd状态
+  tx_ring[idx].cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+
+  // 并保存指向mbuf的指针，以便稍后释放
+  tx_mbufs[idx] = m;
+
+  // 最后，通过将一加到E1000_TDT再对TX_RING_SIZE取模来更新环位置。
+  regs[E1000_TDT] = (idx + 1) % TX_RING_SIZE;
+
+  release(&e1000_lock);
+  // 如果e1000_transmit()成功地将mbuf添加到环中，则返回0
   return 0;
+  
 }
 
 static void
-e1000_recv(void)
+e1000_recv(void) // 接受数据
 {
   //
   // Your code here.
@@ -115,6 +150,35 @@ e1000_recv(void)
   // Check for packets that have arrived from the e1000
   // Create and deliver an mbuf for each packet (using net_rx()).
   //
+  // 首先通过提取E1000_RDT控制寄存器并加一对RX_RING_SIZE取模
+  // 向E1000询问下一个等待接收数据包（如果有）所在的环索引。
+  uint32 idx = (regs[E1000_RDT] + 1) % RX_RING_SIZE;
+
+  // 通过检查描述符status部分中的E1000_RXD_STAT_DD位来检查新数据包是否可用
+  while (rx_ring[idx].status & E1000_RXD_STAT_DD)
+  {
+    // 将mbuf的m->len更新为描述符中报告的长度。
+    rx_mbufs[idx]->len = rx_ring[idx].length;
+    // 使用net_rx()将mbuf传送到网络栈
+    net_rx(rx_mbufs[idx]);
+    // 使用mbufalloc()分配一个新的mbuf，以替换刚刚给net_rx()的mbuf。
+    rx_mbufs[idx] = mbufalloc(0);
+
+    // 在某刻，曾经到达的数据包总数将超过环大小（16）；
+    if (!rx_mbufs[idx])
+      panic("e1000_recv"); 
+
+    // 将其数据指针编程到描述符中。
+    rx_ring[idx].addr = (uint64)rx_mbufs[idx]->head;
+    
+    // 将描述符的状态位清除为零。
+    rx_ring[idx].status = 0;
+
+    // 最后，将E1000_RDT寄存器更新为最后处理的环描述符的索引。
+    regs[E1000_RDT] = idx;
+    idx = (idx + 1) % RX_RING_SIZE;
+  }
+
 }
 
 void
